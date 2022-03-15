@@ -196,7 +196,7 @@ func ForceReplicationWorkflow(ctx workflow.Context, params ForceReplicationParam
 	ctx2 := workflow.WithActivityOptions(ctx, ao)
 
 	for i := 0; i < params.PageCountPerExecution; i++ {
-		listFuture := workflow.ExecuteLocalActivity(ctx1, a.ListWorkflows, &workflowservice.ListWorkflowExecutionsRequest{
+		listFuture := workflow.ExecuteActivity(ctx1, a.ListWorkflows, &workflowservice.ListWorkflowExecutionsRequest{
 			Namespace:     params.Namespace,
 			PageSize:      int32(params.ListWorkflowsPageSize),
 			NextPageToken: params.NextPageToken,
