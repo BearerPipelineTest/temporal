@@ -1577,11 +1577,6 @@ func (adh *AdminHandler) validateGetWorkflowExecutionRawHistoryV2Request(
 		return errInvalidEventQueryRange
 	}
 
-	if (request.GetStartEventId() != common.EmptyEventID && request.GetStartEventVersion() == common.EmptyVersion) ||
-		(request.GetStartEventId() == common.EmptyEventID && request.GetStartEventVersion() != common.EmptyVersion) {
-		return errInvalidStartEventCombination
-	}
-
 	return nil
 }
 
