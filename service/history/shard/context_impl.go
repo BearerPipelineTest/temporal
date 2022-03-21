@@ -494,6 +494,14 @@ func (s *ContextImpl) UpdateHandoverNamespaces(namespaces []*namespace.Namespace
 			delete(s.handoverNamespaces, k)
 		}
 	}
+
+	var namespaceNames []string
+	for _, ns := range namespaces {
+		namespaceNames = append(namespaceNames, ns.Name().String())
+	}
+
+	s.GetLogger().Info("Namespace handover info updated.", tag.TaskID(maxRepTaskID), tag.NewAnyTag("namespace-names", namespaceNames),
+		tag.ShardID(s.shardID), tag.NewAnyTag("handover-namespace-info", s.handoverNamespaces))
 }
 
 func (s *ContextImpl) GetTimerMaxReadLevel(cluster string) time.Time {

@@ -552,6 +552,10 @@ func (a *activities) checkHandoverOnce(ctx context.Context, waitRequest waitHand
 		metrics.TargetClusterTag(waitRequest.RemoteCluster),
 		metrics.NamespaceTag(waitRequest.Namespace),
 	).UpdateGauge(metrics.HandoverReadyShardCountGauge, float64(readyShardCount))
+	a.logger.Info("Wait handover ready shard count.",
+		tag.NewInt("ReadyShards", readyShardCount),
+		tag.NewStringTag("Namespace", waitRequest.Namespace),
+		tag.NewStringTag("RemoteCluster", waitRequest.RemoteCluster))
 
 	return readyShardCount == len(resp.Shards), nil
 }
