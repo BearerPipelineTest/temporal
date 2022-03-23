@@ -243,11 +243,21 @@ func (a *activities) ListWorkflows(ctx context.Context, request *workflowservice
 	if err != nil {
 		return nil, err
 	}
+	var lastCloseTime, lastStartTime time.Time
+
 	executions := make([]commonpb.WorkflowExecution, len(resp.Executions))
 	for i, e := range resp.Executions {
 		executions[i] = *e.Execution
+
+		if e.CloseTime != nil {
+			lastCloseTime = *e.CloseTime
+		}
+
+		if e.StartTime != nil {
+			lastStartTime = *e.StartTime
+		}
 	}
-	return &listWorkflowsResponse{Executions: executions, NextPageToken: resp.NextPageToken}, nil
+	return &listWorkflowsResponse{Executions: executions, NextPageToken: resp.NextPageToken, LastCloseTime: lastCloseTime, LastStartTime: lastStartTime}, nil
 }
 
 func (a *activities) GenerateReplicationTasks(ctx context.Context, request *generateReplicationTasksRequest) error {

@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/assert"
@@ -49,6 +50,10 @@ func TestForceReplicationWorkflow(t *testing.T) {
 
 	totalPageCount := 4
 	currentPageCount := 0
+	layout := "2006-01-01 00:00Z"
+	startTime, _ := time.Parse(layout, "2020-01-01 00:00Z")
+	closeTime, _ := time.Parse(layout, "2020-02-01 00:00Z")
+
 	env.OnActivity(a.ListWorkflows, mock.Anything, mock.Anything).Return(func(ctx context.Context, request *workflowservice.ListWorkflowExecutionsRequest) (*listWorkflowsResponse, error) {
 		assert.Equal(t, "test-ns", request.Namespace)
 		currentPageCount++
@@ -56,12 +61,16 @@ func TestForceReplicationWorkflow(t *testing.T) {
 			return &listWorkflowsResponse{
 				Executions:    []commonpb.WorkflowExecution{},
 				NextPageToken: []byte("fake-page-token"),
+				LastStartTime: startTime,
+				LastCloseTime: closeTime,
 			}, nil
 		}
 		// your mock function implementation
 		return &listWorkflowsResponse{
 			Executions:    []commonpb.WorkflowExecution{},
 			NextPageToken: nil, // last page
+			LastStartTime: startTime,
+			LastCloseTime: closeTime,
 		}, nil
 	}).Times(totalPageCount)
 
@@ -79,6 +88,15 @@ func TestForceReplicationWorkflow(t *testing.T) {
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
 	env.AssertExpectations(t)
+
+	envValue, err := env.QueryWorkflow(forceReplicationStatusQueryType)
+	require.NoError(t, err)
+
+	var status ForceReplicationStatus
+	envValue.Get(&status)
+	assert.Equal(t, 0, status.ContinuedAsNewCount)
+	assert.Equal(t, startTime, status.LastStartTime)
+	assert.Equal(t, closeTime, status.LastCloseTime)
 }
 
 func TestForceReplicationWorkflow_ContinueAsNew(t *testing.T) {
@@ -93,6 +111,10 @@ func TestForceReplicationWorkflow_ContinueAsNew(t *testing.T) {
 	totalPageCount := 4
 	currentPageCount := 0
 	maxPageCountPerExecution := 2
+	layout := "2006-01-01 00:00Z"
+	startTime, _ := time.Parse(layout, "2020-01-01 00:00Z")
+	closeTime, _ := time.Parse(layout, "2020-02-01 00:00Z")
+
 	env.OnActivity(a.ListWorkflows, mock.Anything, mock.Anything).Return(func(ctx context.Context, request *workflowservice.ListWorkflowExecutionsRequest) (*listWorkflowsResponse, error) {
 		assert.Equal(t, "test-ns", request.Namespace)
 		currentPageCount++
@@ -100,6 +122,8 @@ func TestForceReplicationWorkflow_ContinueAsNew(t *testing.T) {
 			return &listWorkflowsResponse{
 				Executions:    []commonpb.WorkflowExecution{},
 				NextPageToken: []byte("fake-page-token"),
+				LastStartTime: startTime,
+				LastCloseTime: closeTime,
 			}, nil
 		}
 		// your mock function implementation
@@ -125,6 +149,15 @@ func TestForceReplicationWorkflow_ContinueAsNew(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "continue as new")
 	env.AssertExpectations(t)
+
+	envValue, err := env.QueryWorkflow(forceReplicationStatusQueryType)
+	require.NoError(t, err)
+
+	var status ForceReplicationStatus
+	envValue.Get(&status)
+	assert.Equal(t, 1, status.ContinuedAsNewCount)
+	assert.Equal(t, startTime, status.LastStartTime)
+	assert.Equal(t, closeTime, status.LastCloseTime)
 }
 
 func TestForceReplicationWorkflow_ListWorkflowsError(t *testing.T) {

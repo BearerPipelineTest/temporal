@@ -43,12 +43,27 @@ type (
 		ListWorkflowsPageSize   int     // PageSize of ListWorkflow, will paginate through results.
 		PageCountPerExecution   int     // number of pages to be processed before continue as new, max is 1000.
 		NextPageToken           []byte  // used by continue as new
+
+		// Used by query handler to indicate overall progress of replication
+		LastCloseTime       time.Time
+		LastStartTime       time.Time
+		ContinuedAsNewCount int
+	}
+
+	ForceReplicationStatus struct {
+		LastCloseTime       time.Time
+		LastStartTime       time.Time
+		ContinuedAsNewCount int
 	}
 
 	listWorkflowsResponse struct {
 		Executions    []commonpb.WorkflowExecution
 		NextPageToken []byte
 		Error         error
+
+		// These can be used to help report progress of the force-replication scan
+		LastCloseTime time.Time
+		LastStartTime time.Time
 	}
 
 	generateReplicationTasksRequest struct {
@@ -74,7 +89,19 @@ var (
 	}
 )
 
+const (
+	forceReplicationStatusQueryType = "force-replication-status"
+)
+
 func ForceReplicationWorkflow(ctx workflow.Context, params ForceReplicationParams) error {
+	workflow.SetQueryHandler(ctx, forceReplicationStatusQueryType, func() (ForceReplicationStatus, error) {
+		return ForceReplicationStatus{
+			LastCloseTime:       params.LastCloseTime,
+			LastStartTime:       params.LastStartTime,
+			ContinuedAsNewCount: params.ContinuedAsNewCount,
+		}, nil
+	})
+
 	if err := validateAndSetForceReplicationParams(&params); err != nil {
 		return err
 	}
@@ -84,19 +111,18 @@ func ForceReplicationWorkflow(ctx workflow.Context, params ForceReplicationParam
 		return err
 	}
 
-	listWorkflowsCh := workflow.NewBufferedChannel(ctx, params.PageCountPerExecution)
+	workflowExecutionsCh := workflow.NewBufferedChannel(ctx, params.PageCountPerExecution)
 
-	var continueAsNewPageToken []byte
 	var listWorkflowsErr error
 	workflow.Go(ctx, func(ctx workflow.Context) {
-		continueAsNewPageToken, listWorkflowsErr = listWorkflowsForReplication(ctx, listWorkflowsCh, params)
+		listWorkflowsErr = listWorkflowsForReplication(ctx, workflowExecutionsCh, &params)
 
 		// enqueueReplicationTasks only returns when listWorkflowCh is closed (or if it encounters an error).
-		// Therefore, continueAsNewPageToken and listWorkflowsErr is always set prior to their use.
-		listWorkflowsCh.Close()
+		// Therefore, listWorkflowsErr will be set prior to their use and params will be updated.
+		workflowExecutionsCh.Close()
 	})
 
-	if err := enqueueReplicationTasks(ctx, listWorkflowsCh, metadataResp.NamespaceID, params); err != nil {
+	if err := enqueueReplicationTasks(ctx, workflowExecutionsCh, metadataResp.NamespaceID, params); err != nil {
 		return err
 	}
 
@@ -104,13 +130,14 @@ func ForceReplicationWorkflow(ctx workflow.Context, params ForceReplicationParam
 		return listWorkflowsErr
 	}
 
-	if continueAsNewPageToken == nil {
+	if params.NextPageToken == nil {
 		return nil
 	}
 
+	params.ContinuedAsNewCount++
+
 	// There are still more workflows to replicate. Continue-as-new to process on a new run.
 	// This prevents history size from exceeding the server-defined limit
-	params.NextPageToken = continueAsNewPageToken
 	return workflow.NewContinueAsNewError(ctx, ForceReplicationWorkflow, params)
 }
 
@@ -154,7 +181,7 @@ func getClusterMetadata(ctx workflow.Context, params ForceReplicationParams) (me
 	return metadataResponse{}, err
 }
 
-func listWorkflowsForReplication(ctx workflow.Context, listWorkflowsCh workflow.Channel, params ForceReplicationParams) ([]byte, error) {
+func listWorkflowsForReplication(ctx workflow.Context, workflowExecutionsCh workflow.Channel, params *ForceReplicationParams) error {
 	var a *activities
 
 	ao := workflow.ActivityOptions{
@@ -175,21 +202,24 @@ func listWorkflowsForReplication(ctx workflow.Context, listWorkflowsCh workflow.
 
 		var listResp listWorkflowsResponse
 		if err := listFuture.Get(ctx, &listResp); err != nil {
-			return nil, err
+			return err
 		}
 
-		listWorkflowsCh.Send(ctx, listResp)
+		workflowExecutionsCh.Send(ctx, listResp.Executions)
 
 		params.NextPageToken = listResp.NextPageToken
+		params.LastCloseTime = listResp.LastCloseTime
+		params.LastStartTime = listResp.LastStartTime
+
 		if params.NextPageToken == nil {
-			return nil, nil
+			break
 		}
 	}
 
-	return params.NextPageToken, nil
+	return nil
 }
 
-func enqueueReplicationTasks(ctx workflow.Context, listWorkflowsCh workflow.Channel, namespaceID string, params ForceReplicationParams) error {
+func enqueueReplicationTasks(ctx workflow.Context, workflowExecutionsCh workflow.Channel, namespaceID string, params ForceReplicationParams) error {
 	selector := workflow.NewSelector(ctx)
 	pendingActivities := 0
 
@@ -202,12 +232,12 @@ func enqueueReplicationTasks(ctx workflow.Context, listWorkflowsCh workflow.Chan
 	actx := workflow.WithActivityOptions(ctx, ao)
 	var a *activities
 	var futures []workflow.Future
-	var listResp listWorkflowsResponse
+	var workflowExecutions []commonpb.WorkflowExecution
 
-	for listWorkflowsCh.Receive(ctx, &listResp) {
+	for workflowExecutionsCh.Receive(ctx, &workflowExecutions) {
 		replicationTaskFuture := workflow.ExecuteActivity(actx, a.GenerateReplicationTasks, &generateReplicationTasksRequest{
 			NamespaceID: namespaceID,
-			Executions:  listResp.Executions,
+			Executions:  workflowExecutions,
 			RPS:         params.OverallRps / float64(params.ConcurrentActivityCount),
 		})
 
