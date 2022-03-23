@@ -63,16 +63,6 @@ const (
 )
 
 type (
-	ForceReplicationParams struct {
-		Namespace               string
-		Query                   string // query to list workflows for replication
-		ConcurrentActivityCount int
-		RpsPerActivity          int    // RPS per each activity
-		ListWorkflowsPageSize   int    // PageSize of ListWorkflow, will paginate through results.
-		PageCountPerExecution   int    // number of pages to be processed before continue as new, max is 1000.
-		NextPageToken           []byte // used by continue as new
-	}
-
 	NamespaceHandoverParams struct {
 		Namespace     string
 		RemoteCluster string
@@ -91,26 +81,6 @@ type (
 		frontendClient    workflowservice.WorkflowServiceClient
 		logger            log.Logger
 		metricsClient     metrics.Client
-	}
-
-	listWorkflowsResponse struct {
-		Executions    []commonpb.WorkflowExecution
-		NextPageToken []byte
-	}
-
-	generateReplicationTasksRequest struct {
-		NamespaceID string
-		Executions  []commonpb.WorkflowExecution
-		RPS         int
-	}
-
-	metadataRequest struct {
-		Namespace string
-	}
-
-	metadataResponse struct {
-		ShardCount  int32
-		NamespaceID string
 	}
 
 	replicationStatus struct {
@@ -144,102 +114,6 @@ type (
 var (
 	historyServiceRetryPolicy = common.CreateHistoryServiceRetryPolicy()
 )
-
-func ForceReplicationWorkflow(ctx workflow.Context, params ForceReplicationParams) error {
-	if len(params.Namespace) == 0 {
-		return errors.New("InvalidArgument: Namespace is required")
-	}
-	if params.ConcurrentActivityCount <= 0 {
-		params.ConcurrentActivityCount = 1
-	}
-	if params.RpsPerActivity <= 0 {
-		params.RpsPerActivity = 1
-	}
-	if params.ListWorkflowsPageSize <= 0 {
-		params.ListWorkflowsPageSize = defaultListWorkflowsPageSize
-	}
-	if params.PageCountPerExecution <= 0 {
-		params.PageCountPerExecution = defaultPageCountPerExecution
-	}
-	if params.PageCountPerExecution > maxPageCountPerExecution {
-		params.PageCountPerExecution = maxPageCountPerExecution
-	}
-
-	retryPolicy := &temporal.RetryPolicy{
-		InitialInterval: time.Second,
-		MaximumInterval: time.Second * 10,
-	}
-
-	// Get cluster metadata, we need namespace ID for history API call.
-	// TODO: remove this step.
-	lao := workflow.LocalActivityOptions{
-		StartToCloseTimeout: time.Second * 10,
-		RetryPolicy:         retryPolicy,
-	}
-	ctx1 := workflow.WithLocalActivityOptions(ctx, lao)
-	var a *activities
-	var metadataResp metadataResponse
-	metadataRequest := metadataRequest{Namespace: params.Namespace}
-	err := workflow.ExecuteLocalActivity(ctx1, a.GetMetadata, metadataRequest).Get(ctx1, &metadataResp)
-	if err != nil {
-		return err
-	}
-
-	selector := workflow.NewSelector(ctx)
-	pendingActivities := 0
-
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: time.Hour,
-		HeartbeatTimeout:    time.Second * 30,
-		RetryPolicy:         retryPolicy,
-	}
-	ctx2 := workflow.WithActivityOptions(ctx, ao)
-
-	for i := 0; i < params.PageCountPerExecution; i++ {
-		listFuture := workflow.ExecuteActivity(ctx2, a.ListWorkflows, &workflowservice.ListWorkflowExecutionsRequest{
-			Namespace:     params.Namespace,
-			PageSize:      int32(params.ListWorkflowsPageSize),
-			NextPageToken: params.NextPageToken,
-			Query:         params.Query,
-		})
-		var listResp listWorkflowsResponse
-		err = listFuture.Get(ctx1, &listResp)
-		if err != nil {
-			return err
-		}
-
-		workerFuture := workflow.ExecuteActivity(ctx2, a.GenerateReplicationTasks, &generateReplicationTasksRequest{
-			NamespaceID: metadataResp.NamespaceID,
-			Executions:  listResp.Executions,
-			RPS:         params.RpsPerActivity,
-		})
-		pendingActivities++
-		selector.AddFuture(workerFuture, func(f workflow.Future) {
-			pendingActivities--
-		})
-
-		if pendingActivities >= params.ConcurrentActivityCount {
-			selector.Select(ctx) // this will block until one of the pending activities complete
-		}
-
-		params.NextPageToken = listResp.NextPageToken
-		if params.NextPageToken == nil {
-			break
-		}
-	}
-	// wait until all pending activities are done
-	for pendingActivities > 0 {
-		selector.Select(ctx)
-	}
-
-	if params.NextPageToken == nil {
-		// we are all done
-		return nil
-	}
-
-	// too many pages, and we exceed PageCountPerExecution, so move on to next execution
-	return workflow.NewContinueAsNewError(ctx, ForceReplicationWorkflow, params)
-}
 
 func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverParams) error {
 	// validate input params
