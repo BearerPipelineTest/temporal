@@ -26,6 +26,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/pborman/uuid"
@@ -123,5 +124,78 @@ func TestForceReplicationWorkflow_ContinueAsNew(t *testing.T) {
 	err := env.GetWorkflowError()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "continue as new")
+	env.AssertExpectations(t)
+}
+
+func TestForceReplicationWorkflow_ListWorkflowsError(t *testing.T) {
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+
+	namespaceID := uuid.New()
+
+	var a *activities
+	env.OnActivity(a.GetMetadata, mock.Anything, metadataRequest{Namespace: "test-ns"}).Return(&metadataResponse{ShardCount: 4, NamespaceID: namespaceID}, nil)
+
+	maxPageCountPerExecution := 2
+	env.OnActivity(a.ListWorkflows, mock.Anything, mock.Anything).Return(nil, errors.New("mock listWorkflows error"))
+
+	env.ExecuteWorkflow(ForceReplicationWorkflow, ForceReplicationParams{
+		Namespace:               "test-ns",
+		Query:                   "",
+		ConcurrentActivityCount: 2,
+		OverallRps:              10,
+		ListWorkflowsPageSize:   1,
+		PageCountPerExecution:   maxPageCountPerExecution,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	err := env.GetWorkflowError()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mock listWorkflows error")
+	env.AssertExpectations(t)
+}
+
+func TestForceReplicationWorkflow_GenerateReplicationTaskError(t *testing.T) {
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+
+	namespaceID := uuid.New()
+
+	var a *activities
+	env.OnActivity(a.GetMetadata, mock.Anything, metadataRequest{Namespace: "test-ns"}).Return(&metadataResponse{ShardCount: 4, NamespaceID: namespaceID}, nil)
+
+	totalPageCount := 4
+	currentPageCount := 0
+	env.OnActivity(a.ListWorkflows, mock.Anything, mock.Anything).Return(func(ctx context.Context, request *workflowservice.ListWorkflowExecutionsRequest) (*listWorkflowsResponse, error) {
+		assert.Equal(t, "test-ns", request.Namespace)
+		currentPageCount++
+		if currentPageCount < totalPageCount {
+			return &listWorkflowsResponse{
+				Executions:    []commonpb.WorkflowExecution{},
+				NextPageToken: []byte("fake-page-token"),
+			}, nil
+		}
+		// your mock function implementation
+		return &listWorkflowsResponse{
+			Executions:    []commonpb.WorkflowExecution{},
+			NextPageToken: nil, // last page
+		}, nil
+	}).Times(totalPageCount)
+
+	env.OnActivity(a.GenerateReplicationTasks, mock.Anything, mock.Anything).Return(errors.New("mock generate replication tasks error"))
+
+	env.ExecuteWorkflow(ForceReplicationWorkflow, ForceReplicationParams{
+		Namespace:               "test-ns",
+		Query:                   "",
+		ConcurrentActivityCount: 2,
+		OverallRps:              10,
+		ListWorkflowsPageSize:   1,
+		PageCountPerExecution:   4,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	err := env.GetWorkflowError()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mock generate replication tasks error")
 	env.AssertExpectations(t)
 }
