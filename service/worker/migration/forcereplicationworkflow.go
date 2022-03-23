@@ -96,7 +96,7 @@ func ForceReplicationWorkflow(ctx workflow.Context, params ForceReplicationParam
 		listWorkflowsCh.Close()
 	})
 
-	if err := enqueueReplicationTasks(ctx, listWorkflowsCh, metadataResp, params); err != nil {
+	if err := enqueueReplicationTasks(ctx, listWorkflowsCh, metadataResp.NamespaceID, params); err != nil {
 		return err
 	}
 
@@ -189,7 +189,7 @@ func listWorkflowsForReplication(ctx workflow.Context, listWorkflowsCh workflow.
 	return params.NextPageToken, nil
 }
 
-func enqueueReplicationTasks(ctx workflow.Context, listWorkflowsCh workflow.Channel, metadataResp metadataResponse, params ForceReplicationParams) error {
+func enqueueReplicationTasks(ctx workflow.Context, listWorkflowsCh workflow.Channel, namespaceID string, params ForceReplicationParams) error {
 	selector := workflow.NewSelector(ctx)
 	pendingActivities := 0
 
@@ -206,7 +206,7 @@ func enqueueReplicationTasks(ctx workflow.Context, listWorkflowsCh workflow.Chan
 
 	for listWorkflowsCh.Receive(ctx, &listResp) {
 		replicationTaskFuture := workflow.ExecuteActivity(actx, a.GenerateReplicationTasks, &generateReplicationTasksRequest{
-			NamespaceID: metadataResp.NamespaceID,
+			NamespaceID: namespaceID,
 			Executions:  listResp.Executions,
 			RPS:         params.OverallRps / float64(params.ConcurrentActivityCount),
 		})
