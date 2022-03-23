@@ -70,7 +70,7 @@ func TestForceReplicationWorkflow(t *testing.T) {
 		Namespace:               "test-ns",
 		Query:                   "",
 		ConcurrentActivityCount: 2,
-		RpsPerActivity:          10,
+		OverallRps:              10,
 		ListWorkflowsPageSize:   1,
 		PageCountPerExecution:   4,
 	})
@@ -114,7 +114,7 @@ func TestForceReplicationWorkflow_ContinueAsNew(t *testing.T) {
 		Namespace:               "test-ns",
 		Query:                   "",
 		ConcurrentActivityCount: 2,
-		RpsPerActivity:          10,
+		OverallRps:              10,
 		ListWorkflowsPageSize:   1,
 		PageCountPerExecution:   maxPageCountPerExecution,
 	})

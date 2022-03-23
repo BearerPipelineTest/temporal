@@ -39,10 +39,10 @@ type (
 		Namespace               string
 		Query                   string // query to list workflows for replication
 		ConcurrentActivityCount int
-		RpsPerActivity          int    // RPS per each activity
-		ListWorkflowsPageSize   int    // PageSize of ListWorkflow, will paginate through results.
-		PageCountPerExecution   int    // number of pages to be processed before continue as new, max is 1000.
-		NextPageToken           []byte // used by continue as new
+		OverallRps              float64 // RPS for enqueuing of replication tasks
+		ListWorkflowsPageSize   int     // PageSize of ListWorkflow, will paginate through results.
+		PageCountPerExecution   int     // number of pages to be processed before continue as new, max is 1000.
+		NextPageToken           []byte  // used by continue as new
 	}
 
 	listWorkflowsResponse struct {
@@ -54,7 +54,7 @@ type (
 	generateReplicationTasksRequest struct {
 		NamespaceID string
 		Executions  []commonpb.WorkflowExecution
-		RPS         int
+		RPS         float64
 	}
 
 	metadataRequest struct {
@@ -121,8 +121,8 @@ func validateAndSetForceReplicationParams(params *ForceReplicationParams) error 
 	if params.ConcurrentActivityCount <= 0 {
 		params.ConcurrentActivityCount = 1
 	}
-	if params.RpsPerActivity <= 0 {
-		params.RpsPerActivity = 1
+	if params.OverallRps <= 0 {
+		params.OverallRps = 1
 	}
 	if params.ListWorkflowsPageSize <= 0 {
 		params.ListWorkflowsPageSize = defaultListWorkflowsPageSize
@@ -208,7 +208,7 @@ func enqueueReplicationTasks(ctx workflow.Context, listWorkflowsCh workflow.Chan
 		replicationTaskFuture := workflow.ExecuteActivity(actx, a.GenerateReplicationTasks, &generateReplicationTasksRequest{
 			NamespaceID: metadataResp.NamespaceID,
 			Executions:  listResp.Executions,
-			RPS:         params.RpsPerActivity,
+			RPS:         params.OverallRps / float64(params.ConcurrentActivityCount),
 		})
 
 		pendingActivities++

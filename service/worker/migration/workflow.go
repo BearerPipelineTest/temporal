@@ -251,7 +251,7 @@ func (a *activities) ListWorkflows(ctx context.Context, request *workflowservice
 }
 
 func (a *activities) GenerateReplicationTasks(ctx context.Context, request *generateReplicationTasksRequest) error {
-	rateLimiter := quotas.NewRateLimiter(float64(request.RPS), request.RPS)
+	rateLimiter := quotas.NewRateLimiter(float64(request.RPS), int(request.RPS))
 
 	startIndex := 0
 	if activity.HasHeartbeatDetails(ctx) {
