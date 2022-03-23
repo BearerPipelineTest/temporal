@@ -122,7 +122,7 @@ func validateAndSetForceReplicationParams(params *ForceReplicationParams) error 
 		params.ConcurrentActivityCount = 1
 	}
 	if params.OverallRps <= 0 {
-		params.OverallRps = 1
+		params.OverallRps = float64(params.ConcurrentActivityCount)
 	}
 	if params.ListWorkflowsPageSize <= 0 {
 		params.ListWorkflowsPageSize = defaultListWorkflowsPageSize
