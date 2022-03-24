@@ -183,7 +183,7 @@ func getClusterMetadata(ctx workflow.Context, params ForceReplicationParams) (me
 	var metadataResp metadataResponse
 	metadataRequest := metadataRequest{Namespace: params.Namespace}
 	err := workflow.ExecuteLocalActivity(actx, a.GetMetadata, metadataRequest).Get(ctx, &metadataResp)
-	return metadataResponse{}, err
+	return metadataResp, err
 }
 
 func listWorkflowsForReplication(ctx workflow.Context, workflowExecutionsCh workflow.Channel, params *ForceReplicationParams) error {
