@@ -25,18 +25,13 @@
 package migration
 
 import (
-	"context"
 	"errors"
-	"math"
 	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
-	"go.temporal.io/server/common/definition"
-	"go.temporal.io/server/common/quotas"
 )
 
 type (
@@ -262,52 +257,6 @@ func enqueueReplicationTasks(ctx workflow.Context, workflowExecutionsCh workflow
 		if err := future.Get(ctx, nil); err != nil {
 			return err
 		}
-	}
-
-	return nil
-}
-
-func (a *activities) ListWorkflows(ctx context.Context, request *workflowservice.ListWorkflowExecutionsRequest) (*listWorkflowsResponse, error) {
-	resp, err := a.frontendClient.ListWorkflowExecutions(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	var lastCloseTime, lastStartTime time.Time
-
-	executions := make([]commonpb.WorkflowExecution, len(resp.Executions))
-	for i, e := range resp.Executions {
-		executions[i] = *e.Execution
-
-		if e.CloseTime != nil {
-			lastCloseTime = *e.CloseTime
-		}
-
-		if e.StartTime != nil {
-			lastStartTime = *e.StartTime
-		}
-	}
-	return &listWorkflowsResponse{Executions: executions, NextPageToken: resp.NextPageToken, LastCloseTime: lastCloseTime, LastStartTime: lastStartTime}, nil
-}
-
-func (a *activities) GenerateReplicationTasks(ctx context.Context, request *generateReplicationTasksRequest) error {
-	rateLimiter := quotas.NewRateLimiter(float64(request.RPS), int(math.Ceil(request.RPS)))
-
-	startIndex := 0
-	if activity.HasHeartbeatDetails(ctx) {
-		var finishedIndex int
-		if err := activity.GetHeartbeatDetails(ctx, &finishedIndex); err == nil {
-			startIndex = finishedIndex + 1 // start from next one
-		}
-	}
-
-	for i := startIndex; i < len(request.Executions); i++ {
-		rateLimiter.Wait(ctx)
-		we := request.Executions[i]
-		err := a.generateWorkflowReplicationTask(ctx, definition.NewWorkflowKey(request.NamespaceID, we.WorkflowId, we.RunId))
-		if err != nil {
-			return err
-		}
-		activity.RecordHeartbeat(ctx, i)
 	}
 
 	return nil
