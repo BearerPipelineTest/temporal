@@ -247,7 +247,7 @@ func enqueueReplicationTasks(ctx workflow.Context, workflowExecutionsCh workflow
 		})
 
 		if pendingActivities == params.ConcurrentActivityCount {
-			selector.Select(ctx) // this will block until one of the pending activities complete
+			selector.Select(ctx) // this will block until one of the in-flight activities completes
 		}
 
 		futures = append(futures, replicationTaskFuture)

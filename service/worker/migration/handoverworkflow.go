@@ -105,7 +105,7 @@ var (
 	historyServiceRetryPolicy = common.CreateHistoryServiceRetryPolicy()
 )
 
-func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverParams) error {
+func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverParams) (retErr error) {
 	// validate input params
 	if len(params.Namespace) == 0 {
 		return errors.New("InvalidArgument: Namespace is required")
@@ -133,7 +133,7 @@ func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverPar
 
 	var a *activities
 
-	// ** Step 1, Get cluster metadata **
+	// ** Step 1: Get Cluster Metadata **
 	var metadataResp metadataResponse
 	metadataRequest := metadataRequest{Namespace: params.Namespace}
 	err := workflow.ExecuteActivity(ctx, a.GetMetadata, metadataRequest).Get(ctx, &metadataResp)
@@ -141,32 +141,32 @@ func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverPar
 		return err
 	}
 
-	// ** Step 2, get current replication status **
+	// ** Step 2: Get current replication status **
 	var repStatus replicationStatus
 	err = workflow.ExecuteActivity(ctx, a.GetMaxReplicationTaskIDs).Get(ctx, &repStatus)
 	if err != nil {
 		return err
 	}
 
-	// ** Step 3, wait remote cluster to catch up on replication tasks
-	ao3 := workflow.ActivityOptions{
+	// ** Step 3: Wait for Remote Cluster to catch-up on Replication Tasks
+	ao2 := workflow.ActivityOptions{
 		StartToCloseTimeout: time.Hour,
 		HeartbeatTimeout:    time.Second * 10,
 		RetryPolicy:         retryPolicy,
 	}
-	ctx3 := workflow.WithActivityOptions(ctx, ao3)
+	ctx2 := workflow.WithActivityOptions(ctx, ao2)
 	waitRequest := waitReplicationRequest{
 		ShardCount:     metadataResp.ShardCount,
 		RemoteCluster:  params.RemoteCluster,
 		AllowedLagging: time.Duration(params.AllowedLaggingSeconds) * time.Second,
 		WaitForTaskIds: repStatus.MaxReplicationTaskIds,
 	}
-	err = workflow.ExecuteActivity(ctx3, a.WaitReplication, waitRequest).Get(ctx3, nil)
+	err = workflow.ExecuteActivity(ctx2, a.WaitReplication, waitRequest).Get(ctx2, nil)
 	if err != nil {
 		return err
 	}
 
-	// ** Step 4, initiate handover
+	// ** Step 4: Initiate Handover (Namespace cannot serve traffic during this state)
 	handoverRequest := updateStateRequest{
 		Namespace: params.Namespace,
 		NewState:  enumspb.REPLICATION_STATE_HANDOVER,
@@ -176,41 +176,47 @@ func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverPar
 		return err
 	}
 
-	// ** Step 5, wait remote to ack handover task id
-	ao5 := workflow.ActivityOptions{
+	defer func() {
+		// ** Final Step: Reset namespace state from Handover -> Registered. Namespace can start processing traffic again.
+		resetStateRequest := updateStateRequest{
+			Namespace: params.Namespace,
+			NewState:  enumspb.REPLICATION_STATE_NORMAL,
+		}
+		err := workflow.ExecuteActivity(ctx, a.UpdateNamespaceState, resetStateRequest).Get(ctx, nil)
+		if err != nil {
+			retErr = err
+			return
+		}
+	}()
+
+	// ** Step 5: Wait for Remote Cluster to completely drain its Replication Tasks
+	ao3 := workflow.ActivityOptions{
 		StartToCloseTimeout:    time.Second * 30,
 		HeartbeatTimeout:       time.Second * 10,
 		ScheduleToCloseTimeout: time.Second * time.Duration(params.HandoverTimeoutSeconds),
 		RetryPolicy:            retryPolicy,
 	}
-	ctx5 := workflow.WithActivityOptions(ctx, ao5)
+
+	ctx3 := workflow.WithActivityOptions(ctx, ao3)
 	waitHandover := waitHandoverRequest{
 		ShardCount:    metadataResp.ShardCount,
 		Namespace:     params.Namespace,
 		RemoteCluster: params.RemoteCluster,
 	}
-	err5 := workflow.ExecuteActivity(ctx5, a.WaitHandover, waitHandover).Get(ctx5, nil)
-	if err5 == nil {
-		// ** Step 6, remote cluster is ready to take over, update Namespace to use remote cluster as active
-		updateRequest := updateActiveClusterRequest{
-			Namespace:     params.Namespace,
-			ActiveCluster: params.RemoteCluster,
-		}
-		err = workflow.ExecuteActivity(ctx, a.UpdateActiveCluster, updateRequest).Get(ctx, nil)
-		if err != nil {
-			return err
-		}
+	err = workflow.ExecuteActivity(ctx3, a.WaitHandover, waitHandover).Get(ctx3, nil)
+	if err != nil {
+		return
 	}
 
-	// ** Step 7, reset namespace state from Handover -> Registered
-	resetStateRequest := updateStateRequest{
-		Namespace: params.Namespace,
-		NewState:  enumspb.REPLICATION_STATE_NORMAL,
+	// ** Step 6: Remote Cluster is caught up. Update Namespace to be Active on the Remote Cluster.
+	updateRequest := updateActiveClusterRequest{
+		Namespace:     params.Namespace,
+		ActiveCluster: params.RemoteCluster,
 	}
-	err = workflow.ExecuteActivity(ctx, a.UpdateNamespaceState, resetStateRequest).Get(ctx, nil)
+	err = workflow.ExecuteActivity(ctx, a.UpdateActiveCluster, updateRequest).Get(ctx, nil)
 	if err != nil {
 		return err
 	}
 
-	return err5
+	return err
 }

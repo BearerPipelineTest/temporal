@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
@@ -102,6 +103,11 @@ func (a *activities) checkReplicationOnce(ctx context.Context, waitRequest waitR
 	// check that every shard has caught up
 	readyShardCount := 0
 	logged := false
+
+	sort.SliceStable(resp.Shards, func(i, j int) bool {
+		return resp.Shards[i].ShardId < resp.Shards[j].ShardId
+	})
+
 	for _, shard := range resp.Shards {
 		clusterInfo, hasClusterInfo := shard.RemoteClusters[waitRequest.RemoteCluster]
 		if hasClusterInfo {
@@ -112,6 +118,7 @@ func (a *activities) checkReplicationOnce(ctx context.Context, waitRequest waitR
 				continue
 			}
 		}
+
 		// shard is not ready, log first non-ready shard
 		if !logged {
 			logged = true
