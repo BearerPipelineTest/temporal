@@ -106,18 +106,8 @@ var (
 )
 
 func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverParams) (retErr error) {
-	// validate input params
-	if len(params.Namespace) == 0 {
-		return errors.New("InvalidArgument: Namespace is required")
-	}
-	if len(params.RemoteCluster) == 0 {
-		return errors.New("InvalidArgument: RemoteCluster is required")
-	}
-	if params.AllowedLaggingSeconds <= minimumAllowedLaggingSeconds {
-		params.AllowedLaggingSeconds = minimumAllowedLaggingSeconds
-	}
-	if params.HandoverTimeoutSeconds <= minimumHandoverTimeoutSeconds {
-		params.HandoverTimeoutSeconds = minimumHandoverTimeoutSeconds
+	if err := validateAndSetNamespaceHandoverParams(&params); err != nil {
+		return err
 	}
 
 	retryPolicy := &temporal.RetryPolicy{
@@ -166,7 +156,7 @@ func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverPar
 		return err
 	}
 
-	// ** Step 4: Initiate Handover (Namespace cannot serve traffic during this state)
+	// ** Step 4: Initiate Handover (WARNING: Namespace cannot serve traffic while in this state)
 	handoverRequest := updateStateRequest{
 		Namespace: params.Namespace,
 		NewState:  enumspb.REPLICATION_STATE_HANDOVER,
@@ -177,7 +167,9 @@ func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverPar
 	}
 
 	defer func() {
-		// ** Final Step: Reset namespace state from Handover -> Registered. Namespace can start processing traffic again.
+		// ** Final Step: Reset namespace state from Handover -> Registered. This helps ensure that whether
+		//                handover failed or succeeded, the namespace (for whichever cluster it is Active on)
+		//                is able to process traffic again.
 		resetStateRequest := updateStateRequest{
 			Namespace: params.Namespace,
 			NewState:  enumspb.REPLICATION_STATE_NORMAL,
@@ -205,7 +197,7 @@ func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverPar
 	}
 	err = workflow.ExecuteActivity(ctx3, a.WaitHandover, waitHandover).Get(ctx3, nil)
 	if err != nil {
-		return
+		return err
 	}
 
 	// ** Step 6: Remote Cluster is caught up. Update Namespace to be Active on the Remote Cluster.
@@ -219,4 +211,21 @@ func NamespaceHandoverWorkflow(ctx workflow.Context, params NamespaceHandoverPar
 	}
 
 	return err
+}
+
+func validateAndSetNamespaceHandoverParams(params *NamespaceHandoverParams) error {
+	if len(params.Namespace) == 0 {
+		return errors.New("InvalidArgument: Namespace is required")
+	}
+	if len(params.RemoteCluster) == 0 {
+		return errors.New("InvalidArgument: RemoteCluster is required")
+	}
+	if params.AllowedLaggingSeconds <= minimumAllowedLaggingSeconds {
+		params.AllowedLaggingSeconds = minimumAllowedLaggingSeconds
+	}
+	if params.HandoverTimeoutSeconds <= minimumHandoverTimeoutSeconds {
+		params.HandoverTimeoutSeconds = minimumHandoverTimeoutSeconds
+	}
+
+	return nil
 }
